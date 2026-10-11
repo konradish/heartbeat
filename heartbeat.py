@@ -286,7 +286,7 @@ def cmd_next(agent: Agent) -> None:
         out.append("")
         out.append(agent.cfg["footer"].strip())
     out.append("")
-    out.append(f"Write this beat's log to: {agent.log_dir.relative_to(agent.home)}/{log_name}")
+    out.append(f"Write this beat's log file (a plain file, not a memory) to: {agent.log_dir / log_name}")
     for w in agent.warnings:
         out.append(f"NOTE: {w}")
     out.append(f"WAKE_IN: {max(MIN_WAKE, min(3600, agent.interval(now)))}")
@@ -367,8 +367,10 @@ class Pane:
         return self.tmux("has-session", "-t", self.a.session).returncode == 0
 
     def create(self) -> None:
+        # Plain bash, not the login zsh: oh-my-zsh's "update? [Y/n]" prompt would eat the
+        # launch line (same trap qtab-cy hit on 2026-10-11).
         self.tmux("new-session", "-d", "-s", self.a.session, "-n", self.a.window,
-                  "-c", str(self.a.home), "-x", "220", "-y", "50", check=True)
+                  "-c", str(self.a.home), "-x", "220", "-y", "50", "bash", check=True)
 
     def command(self) -> str:
         return self.tmux("display", "-p", "-t", self.target, "#{pane_current_command}").stdout.strip()

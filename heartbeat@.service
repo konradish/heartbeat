@@ -1,0 +1,18 @@
+# Watchdog for one heartbeat agent whose home is ~/src/<name>/ with a heartbeat.yaml.
+# Install: ln -s ~/src/heartbeat/heartbeat@.service ~/.config/systemd/user/
+#          systemctl --user daemon-reload && systemctl --user enable --now heartbeat@<name>
+# Attach:  tmux -L <name> attach -t <name>      Logs: journalctl --user -u heartbeat@<name> -f
+[Unit]
+Description=Heartbeat watchdog for agent %i
+
+[Service]
+ExecStart=%h/src/heartbeat/heartbeat.py watch %h/src/%i/heartbeat.yaml
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=30
+MemoryMax=256M
+# Stopping the watchdog must not kill the agent: tmux and Claude run in their own scopes.
+KillMode=process
+
+[Install]
+WantedBy=default.target
