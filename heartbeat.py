@@ -479,9 +479,9 @@ def watch_once(agent: Agent, pane: Pane, st: dict) -> None:
     stale = now - max(st.get("last_beat_at", 0), st.get("armed_at", 0)) > STALE_FACTOR * agent.interval(now)
     if st.get("needs_arm") or stale:
         pane.paste(LOOP_PROMPT.format(name=agent.name, cmd=agent.cmd(), yaml=agent.yaml_path))
+        log(agent, "armed /loop" + ("" if st.get("needs_arm") else " (beats had stopped)"))
         st["armed_at"] = now
         st["needs_arm"] = False
-        log(agent, "armed /loop" + (" (beats had stopped)" if stale and st.get("last_beat_at") else ""))
 
 
 def cmd_watch(yaml_path: str) -> None:
