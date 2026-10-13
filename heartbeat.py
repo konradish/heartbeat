@@ -22,6 +22,14 @@ Commands:
   heartbeat.py status <agent.yaml>   show state, the YAML's health and the pane
   heartbeat.py check  <agent.yaml>   validate the YAML (run after editing it)
 
+Optional watchdog keys (Konrad's yes, 2026-10-13):
+  wait_for: <url>     before launching Claude, wait until this answers (e.g. the MCP gateway's
+                      /health), checked once per watch tick; wait_max (default 5m) then launches
+                      anyway and adds a warning to the boot prompt.
+  alert_pane: s:sess  when the watchdog gives up (3 exits in 30 min), paste one line into this
+                      tmux pane (socket:session), e.g. the router that posts to Konrad's Telegram.
+                      Pasted only at an idle prompt; retried each tick until it goes.
+
 Beat choice, first match wins: close (NULL streak hit its `close` threshold) ->
 override (temporary, always ends) -> pick script (the agent's own logic) ->
 forced beats (NULL streak) -> the rotation.
@@ -119,6 +127,15 @@ def validate(cfg) -> list[str]:
                 errs.append("when_nulls uses `close` but there is no `close:` prompt")
         elif not (isinstance(act, list) and act and all(a in names for a in act)):
             errs.append(f"when_nulls.{n} must be `close` or a list of beat names")
+    if cfg.get("wait_for") and not re.match(r"https?://", str(cfg["wait_for"])):
+        errs.append("wait_for must be an http(s) URL")
+    if cfg.get("wait_max"):
+        try:
+            parse_duration(cfg["wait_max"])
+        except ValueError as e:
+            errs.append(f"wait_max: {e}")
+    if cfg.get("alert_pane") and not re.fullmatch(r"[\w.-]+:[\w.-]+", str(cfg["alert_pane"])):
+        errs.append("alert_pane must be socket:session, e.g. router:router")
     ov = cfg.get("override")
     if ov:
         if not isinstance(ov, dict):
@@ -420,6 +437,38 @@ def launch_line(agent: Agent) -> str:
     return launch
 
 
+def reachable(url: str) -> bool:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return 200 <= r.status < 400
+    except Exception:
+        return False
+
+
+def send_alert(agent: Agent, text: str) -> bool:
+    """Paste `text` into the alert pane at an idle prompt. True once it is sent (or there is no pane
+    configured); False to retry next tick. Never types into a busy or unknown screen."""
+    target = agent.cfg.get("alert_pane")
+    if not target:
+        return True
+    sock, sess = str(target).split(":", 1)
+    tm = ["tmux", "-L", sock]
+    if subprocess.run([*tm, "has-session", "-t", sess], capture_output=True).returncode != 0:
+        return False
+    lines = subprocess.run([*tm, "capture-pane", "-p", "-t", sess], capture_output=True, text=True).stdout.rstrip("\n").splitlines()
+    if read_screen(lines) != "idle":
+        return False
+    buf = agent.dir / "alert.txt"
+    buf.write_text(text)
+    subprocess.run([*tm, "load-buffer", "-b", "heartbeat-alert", str(buf)], check=True)
+    subprocess.run([*tm, "paste-buffer", "-d", "-b", "heartbeat-alert", "-t", sess], check=True)
+    time.sleep(2)
+    subprocess.run([*tm, "send-keys", "-t", sess, "Enter"], check=True)
+    log(agent, f"alert pasted into {target}")
+    return True
+
+
 def watch_once(agent: Agent, pane: Pane, st: dict) -> None:
     now = time.time()
     if not pane.exists():
@@ -433,7 +482,30 @@ def watch_once(agent: Agent, pane: Pane, st: dict) -> None:
             if not st.get("gave_up"):
                 log(agent, "Claude exited 3 times in 30 min. Not relaunching; fix it and restart the service.")
                 st["gave_up"] = True
+            if not st.get("alert_sent"):
+                st["alert_sent"] = send_alert(agent, (
+                    f"[{agent.name} watchdog] {agent.name} is down: Claude exited 3 times in 30 minutes, so the "
+                    f"watchdog stopped relaunching it. Please post this to Konrad on Telegram. To restart after a "
+                    f"fix: systemctl --user restart heartbeat@{agent.name}"))
             return
+        url = agent.cfg.get("wait_for")
+        if url and not reachable(url):
+            since = st.setdefault("wait_since", now)
+            limit = parse_duration(agent.cfg.get("wait_max", "5m"))
+            if now - since < limit:
+                if not st.get("wait_logged"):
+                    log(agent, f"waiting for {url} before launching (up to {limit // 60} min)" if limit >= 60
+                        else f"waiting for {url} before launching (up to {limit} s)")
+                    st["wait_logged"] = True
+                return
+            st["boot_warning"] = (f"{url} was not answering when the watchdog launched you (it waited "
+                                  f"{int(now - since) // 60} min). If your chat or MCP tools fail, say so in your "
+                                  f"first beat log.")
+            log(agent, f"{url} still down after {limit} s; launching anyway")
+        elif url and st.get("wait_since"):
+            log(agent, f"{url} answers; launching")
+        st.pop("wait_since", None)
+        st.pop("wait_logged", None)
         pane.tmux("send-keys", "-t", pane.target, launch_line(agent), "Enter", check=True)
         st["launches"] = recent + [now]
         st["needs_boot"] = True
@@ -465,8 +537,9 @@ def watch_once(agent: Agent, pane: Pane, st: dict) -> None:
         log(agent, "screen is back to a normal prompt")
     if st.get("needs_boot"):
         if agent.cfg.get("boot"):
-            pane.paste(agent.cfg["boot"].strip())
-            log(agent, "sent boot prompt")
+            warning = st.pop("boot_warning", None)
+            pane.paste(agent.cfg["boot"].strip() + (f"\n\nWarning from the watchdog: {warning}" if warning else ""))
+            log(agent, "sent boot prompt" + (" (with a warning)" if warning else ""))
         st["needs_boot"] = False
         st["needs_arm"] = True
         return
@@ -500,6 +573,7 @@ def cmd_watch(yaml_path: str) -> None:
                 # A fresh service start finds Claude either already running (leave it
                 # alone; staleness re-arms the loop) or not (watch_once launches + boots).
                 st.pop("gave_up", None)
+                st.pop("alert_sent", None)
                 if not pane.exists():
                     st["needs_boot"] = True
                 first = False
