@@ -245,17 +245,24 @@ def state_of(agent: Agent):
 
 
 def read_markers(agent: Agent, since: float) -> str | None:
-    """Strongest marker effect in the last 3 lines of beat logs written since `since`."""
+    """Strongest marker effect among beat logs written since `since`.
+
+    A log's marker is its last non-empty line, and only when that whole line is a marker
+    word (markdown emphasis and a trailing period tolerated). Scanning the last 3 lines for
+    the word anywhere let prose like "queued: COMPLETE at the next HOLD" on the
+    second-to-last line beat the real marker below it: kairos's context was wiped on a
+    SUBSTANTIVE or HELD log three times (10/14 02:30, 10/16 19:16, 10/17 05:18).
+    """
     found = set()
     if not agent.log_dir.is_dir():
         return None
     for f in sorted(agent.log_dir.glob("*.md")):
         if f.stat().st_mtime <= since:
             continue
-        tail = "\n".join([ln for ln in f.read_text(errors="replace").splitlines() if ln.strip()][-3:])
-        for word, effect in agent.markers.items():
-            if re.search(rf"\b{re.escape(word)}\b", tail):
-                found.add(effect)
+        lines = [ln.strip() for ln in f.read_text(errors="replace").splitlines() if ln.strip()]
+        last = lines[-1].strip("*_`. ") if lines else ""
+        if last in agent.markers:
+            found.add(agent.markers[last])
     return next((e for e in EFFECTS if e in found), None)
 
 
