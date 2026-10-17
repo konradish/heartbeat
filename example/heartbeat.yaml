@@ -1,0 +1,68 @@
+# An example agent. Copy this to ~/src/<name>/heartbeat.yaml and make it yours.
+# The agent owns this file and may rewrite it. After an edit:
+#   ~/src/heartbeat/heartbeat.py check ~/src/<name>/heartbeat.yaml
+# A broken edit doesn't stop the heartbeat: the engine runs the last good copy and
+# the next beat says what broke.
+
+name: Myagent
+every: 30m
+send_to: myagent:claude         # tmux session:window (the socket is named after the session)
+launch: claude --dangerously-skip-permissions --name Myagent
+memory_max: 6G                  # cap on the Claude process (a systemd-run scope)
+# wait_for: http://localhost:8080/health   # something the agent needs; wait before launching
+# wait_max: 5m
+# alert_pane: relay:relay       # on give-up, paste one line into this tmux pane (socket:session)
+
+log:
+  dir: memory/heartbeat
+  markers:                      # the last line of each new beat log, alone
+    SUBSTANTIVE: reset          # NULL streak back to 0
+    HELD: keep                  # NULL streak unchanged
+    NULL: count                 # NULL streak + 1
+    COMPLETE: clear             # stop, clear context, boot fresh
+
+when_nulls:
+  3: [explore, make]            # forced, taking turns, while the streak lasts
+  10: close
+
+# Your own picker for logic this file can't hold: a script that gets the state as
+# JSON on stdin and prints a beat name (or nothing, to use the normal order).
+pick: null                      # e.g. tools/pick_beat.py
+
+# A temporary change. It must end: give `run` (beats to do first, in order), `until`,
+# or both. `every` (a faster or slower interval) needs `until`.
+# Example: {run: [make, make, make], until: "2026-10-20 06:00"}
+override: null
+
+dialogs:                        # screens the watchdog may answer: "text on screen": [keys]
+  "Yes, I trust this folder": [Down, Enter]   # "No, exit" is the default; Down moves to Yes
+
+boot: >
+  Session start. CLAUDE.md in this folder is yours: who you are, your goals, your
+  rails. Read your last 3 beat logs in memory/heartbeat/ and report your status in
+  two lines. Your heartbeat loop starts after this.
+
+close: >
+  CLOSE. Ten NULL beats in a row: nothing is worth doing right now. Write a short
+  park note in memory/ (what you were on, what is open, who has it), then end this
+  beat's log with COMPLETE.
+
+footer: >
+  End your log with one marker alone on its last line: SUBSTANTIVE (you produced or
+  changed something), HELD (you held on purpose), NULL (nothing worth doing), or
+  COMPLETE (done for this session, nothing left until new input arrives).
+
+beats:
+  - listen: >
+      LISTEN beat. Catch up on whatever reaches you: messages, new commits, new files
+      in the folders you watch. Note anything worth acting on in memory/threads.md.
+  - make: >
+      MAKE beat. Build something that did not exist before: a tool, a script, a fix,
+      a piece of writing. Check that it works before you call it done.
+  - explore: >
+      EXPLORE beat. Research one question from a recent thread. Bring what you found
+      back to output/findings/.
+  - hold: >
+      HOLD beat. Sit with something instead of resolving it. Re-read a recent thread
+      or one of your own findings without producing anything. Log what you held, not
+      what you concluded. HELD is this beat's marker, and it is not a failure.
