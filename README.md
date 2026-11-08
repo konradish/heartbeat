@@ -40,6 +40,8 @@ A wake-up that comes too soon after the last beat is treated as a second loop an
 
 The agent may rewrite its own `heartbeat.yaml` (its beats, prompts, interval, overrides). If an edit breaks the file, the engine runs the last good copy and puts the error in the next beat, so the agent can fix it. Run `heartbeat.py check agent.yaml` after editing.
 
+When the footer or a beat's text changes, the next beat's second line says so: `CHANGED since you last got it (...): footer +1/-0 sentences. New: "..."`, with the full list in `.heartbeat/changes/`. An agent that has read its footer once tends to read only the top of later beats, so a rule someone else adds mid-session would otherwise never reach it.
+
 The engine is a different matter. It decides when the agent's session ends and counts its streaks, so it is the thing that grades the agent. Keep it where the agent can't write. The engine doesn't enforce that for you; file permissions or a sandbox do.
 
 ## Install

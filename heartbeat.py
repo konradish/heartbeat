@@ -266,6 +266,54 @@ def read_markers(agent: Agent, since: float) -> str | None:
     return next((e for e in EFFECTS if e in found), None)
 
 
+# ── what changed since the agent last saw it ────────────────────────────────
+# An agent that has read its footer once tends to stop reading it: Kairos read the whole beat in
+# the first beat of each session and then only the top three lines, for sessions of up to 12 days
+# (measured 2026-11-07). A rule someone else adds mid-session then never reaches it. So the
+# second line of a beat names what changed in the footer or this beat's text since the agent
+# last got them, and the full list goes to .heartbeat/changes/.
+
+CHANGE_FILES_KEPT = 30
+
+
+def sentences(text: str) -> list[str]:
+    return [s for s in re.split(r"(?<=[.!?])\s+", " ".join(text.split())) if s]
+
+
+def note_changes(agent: Agent, st: dict, beat: str, prompt: str, stamp: datetime) -> str | None:
+    """Record what the agent is shown now; return a one-line banner if it changed since last time."""
+    seen = st.setdefault("seen", {})
+    added, removed, parts, since = [], [], [], None
+    for key, label, text in (("footer", "footer", (agent.cfg.get("footer") or "").strip()),
+                             (f"beat:{beat}", f"{beat.upper()} beat", prompt.strip())):
+        digest = hashlib.sha1(text.encode()).hexdigest()
+        old = seen.get(key)
+        if old and old["sha"] != digest:
+            a, b = sentences(old["text"]), sentences(text)
+            plus = [s for s in b if s not in set(a)]
+            minus = [s for s in a if s not in set(b)]
+            added += [(label, s) for s in plus]
+            removed += [(label, s) for s in minus]
+            parts.append(f"{label} +{len(plus)}/-{len(minus)} sentences")
+            since = min(since or old["at"], old["at"])
+        seen[key] = {"sha": digest, "text": text, "at": stamp.timestamp()}
+    if not parts:
+        return None
+    folder = agent.dir / "changes"
+    folder.mkdir(exist_ok=True)
+    path = folder / f"{stamp:%Y-%m-%d-%H%M}-{beat}.txt"
+    path.write_text("".join(f"+ {lab}: {s}\n" for lab, s in added) + "".join(f"- {lab}: {s}\n" for lab, s in removed))
+    for old_file in sorted(folder.glob("*.txt"))[:-CHANGE_FILES_KEPT]:
+        old_file.unlink()
+    head = f"CHANGED since you last got it ({datetime.fromtimestamp(since):%m-%d %H:%M}): {', '.join(parts)}."
+    tail = f" All changes: {path}"
+    if added:
+        room = max(40, 300 - len(head) - len(tail) - 9)
+        first = added[0][1]
+        head += ' New: "' + (first if len(first) <= room else first[:room - 3] + "...") + '"'
+    return head + tail
+
+
 # ── next ────────────────────────────────────────────────────────────────────
 
 def cmd_next(agent: Agent) -> None:
@@ -300,11 +348,12 @@ def cmd_next(agent: Agent) -> None:
         st["last_beat_at"] = now
         st["last_beat"] = beat
         st["history"] = (st["history"] + [[int(now), beat, why]])[-30:]
+        stamp = datetime.now().astimezone()
+        banner = note_changes(agent, st, beat, prompt, stamp)
 
-    stamp = datetime.now().astimezone()
     log_name = f"{stamp:%Y-%m-%d-%H%M}-{beat}.md"
     out.append(f"Heartbeat for {agent.name} · {stamp:%A %Y-%m-%d %H:%M %Z} · {beat.upper()} beat ({why})")
-    out.append("")
+    out.append(banner or "")  # the second line, so an agent that reads only the top still sees it
     out.append(prompt.strip())
     if agent.cfg.get("footer"):
         out.append("")
